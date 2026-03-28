@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Usage Enhancer
 // @namespace    https://claude.ai/
-// @version      2.2
+// @version      2.3
 // @description  Adds daily allocation view, reset countdowns, burn rate, daily % budget with rollover, and weekly burndown to the Claude usage page.
 // @author       Dacilla
 // @match        https://claude.ai/settings/usage*
@@ -282,6 +282,17 @@
     return isNaN(v) ? 14.3 : v;
   }
 
+  // Returns the weekly-cumulative value stored at the end of the most recent
+  // past day that has data (used to derive today's daily delta).
+  function getPrevWeeklyAtEnd(log, todayKey) {
+    const pastKeys = Object.keys(log.days).filter(k => k < todayKey).sort();
+    for (let i = pastKeys.length - 1; i >= 0; i--) {
+      const e = log.days[pastKeys[i]];
+      if (e.weeklyAtEnd != null) return e.weeklyAtEnd;
+    }
+    return 0;
+  }
+
   function computeRollover(log, todayKey) {
     let rollover = 0;
     for (const [key, entry] of Object.entries(log.days)) {
@@ -315,8 +326,13 @@
     ensureTodayEntry(log, baseCap, todayKey);
 
     if (weeklyPct !== null) {
+      // Store the weekly-cumulative snapshot so tomorrow can derive its delta.
+      log.days[todayKey].weeklyAtEnd = weeklyPct;
+      // Daily consumption = how much the weekly bar moved since yesterday's close.
+      const prevWeeklyAtEnd = getPrevWeeklyAtEnd(log, todayKey);
+      const todayDelta = Math.max(0, weeklyPct - prevWeeklyAtEnd);
       const existing = log.days[todayKey].used || 0;
-      log.days[todayKey].used = Math.max(existing, weeklyPct);
+      log.days[todayKey].used = Math.max(existing, todayDelta);
     }
 
     saveWeekLog(log);
@@ -434,8 +450,10 @@
     const todayCap   = todayEntry?.cap ?? baseCap;
     const todayUsed  = todayEntry?.used ?? 0;
     const rollover   = todayEntry?.rollover ?? 0;
-    // Budget warning is based on weekly usage vs today's daily cap
-    const overBudget = weeklyPct !== null && weeklyPct > todayCap;
+    // Daily delta: how much the weekly bar moved since yesterday's close.
+    const prevWeeklyAtEnd  = weekLog ? getPrevWeeklyAtEnd(weekLog, todayKey) : 0;
+    const todayDeltaLive   = weeklyPct !== null ? Math.max(0, weeklyPct - prevWeeklyAtEnd) : null;
+    const overBudget = todayDeltaLive !== null && todayDeltaLive > todayCap;
     const weekGrid   = weekLog ? buildWeekGrid(weekLog, baseCap, todayKey) : [];
     const msUntilWeekReset = getNextWeekStart() - Date.now();
 
@@ -646,8 +664,8 @@
     s2.textContent = 'Daily budget';
     widget.appendChild(s2);
 
-    const isStale       = weeklyPct === null && todayUsed > 0;
-    const currentUsed   = weeklyPct ?? todayUsed;
+    const isStale       = todayDeltaLive === null && todayUsed > 0;
+    const currentUsed   = todayDeltaLive ?? todayUsed;
     const withinCap     = Math.min(currentUsed, todayCap);
     const overCap       = Math.max(0, currentUsed - todayCap);
     const budgetColor   = overBudget ? C.bad : C.good;
@@ -958,11 +976,13 @@
     // Mark refresh time (shown in footer)
     _lastRefreshed = new Date();
 
-    // Budget warning banner
-    const todayKey   = isoDate(new Date());
-    const todayEntry = weekLog?.days?.[todayKey];
-    if (weeklyPct !== null && todayEntry && weeklyPct > todayEntry.cap) {
-      showBudgetWarning(weeklyPct, todayEntry.cap, todayEntry.rollover ?? 0);
+    // Budget warning banner — compare today's daily delta against today's cap.
+    const todayKey        = isoDate(new Date());
+    const todayEntry      = weekLog?.days?.[todayKey];
+    const prevWeeklyAtEnd = getPrevWeeklyAtEnd(weekLog, todayKey);
+    const todayDelta      = weeklyPct !== null ? Math.max(0, weeklyPct - prevWeeklyAtEnd) : null;
+    if (todayDelta !== null && todayEntry && todayDelta > todayEntry.cap) {
+      showBudgetWarning(todayDelta, todayEntry.cap, todayEntry.rollover ?? 0);
     } else {
       removeBudgetWarning();
     }
