@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Usage Enhancer
 // @namespace    https://claude.ai/
-// @version      2.0.1
+// @version      2.1
 // @description  Adds daily allocation view, reset countdowns, burn rate, daily % budget with rollover, and weekly burndown to the Claude usage page.
 // @author       Dacilla
 // @match        https://claude.ai/settings/usage*
@@ -48,9 +48,9 @@
   const KEY_DAILY_BUDGET = 'cue_daily_budget_pct'; // number: user's base daily cap %
   const KEY_WEEK_LOG     = 'cue_week_log';         // {weekStart, days:{date:{used,cap}}}
 
-  // ─── Colour palette ───────────────────────────────────────────────────────────
+  // ─── Colour palettes (resolved per-render based on page theme) ────────────────
 
-  const C = {
+  const DARK_PALETTE = {
     bg:      '#1a1a2e',
     card:    '#16213e',
     border:  '#0f3460',
@@ -63,6 +63,26 @@
     peak:    'rgba(245,166,35,0.12)',
     offpeak: 'rgba(76,175,130,0.08)',
   };
+
+  const LIGHT_PALETTE = {
+    bg:      '#f5f7fa',
+    card:    '#ffffff',
+    border:  '#e1e4eb',
+    accent:  '#c0392b',
+    muted:   '#667085',
+    text:    '#101828',
+    good:    '#027a48',
+    warn:    '#b54708',
+    bad:     '#b42318',
+    peak:    'rgba(180,71,8,0.08)',
+    offpeak: 'rgba(2,122,72,0.06)',
+  };
+
+  // ─── Module-level state ───────────────────────────────────────────────────────
+
+  let _closePopoversHandler = null; // document click listener ref — prevents accumulation
+  let _lastRefreshed        = null; // timestamp of last successful refresh
+  let _startPending         = false; // guard against concurrent start() calls
 
   // ─── Utility ──────────────────────────────────────────────────────────────────
 
@@ -194,11 +214,23 @@
   }
 
   function detectPlanFromPage() {
+    // Try specific low-level text elements first to avoid false positives
+    // (e.g. "pro" appearing in unrelated words like "improve")
+    const candidates = document.querySelectorAll('[class*="text-text-"]');
+    for (const el of candidates) {
+      const t = (el.textContent || '').toLowerCase().trim();
+      if (t === 'max 20× plan' || t === 'max20 plan') return 'max20';
+      if (t === 'max 5× plan'  || t === 'max5 plan')  return 'max5';
+      if (t === 'team plan')   return 'team';
+      if (t === 'pro plan')    return 'pro';
+      if (t === 'free plan')   return 'free';
+    }
+    // Fallback: whole-body scan
     const t = document.body.innerText.toLowerCase();
     if (t.includes('max 20') || t.includes('max20')) return 'max20';
     if (t.includes('max 5')  || t.includes('max5'))  return 'max5';
-    if (t.includes('team'))  return 'team';
-    if (t.includes('pro'))   return 'pro';
+    if (t.includes('team plan')) return 'team';
+    if (t.includes('pro plan'))  return 'pro';
     return null;
   }
 
@@ -226,7 +258,7 @@
 
   function estimateBurnRate(history) {
     if (history.length < 2) return null;
-    const recent = history.slice(-6);
+    const recent = history.slice(-12);
     const first = recent[0], last = recent[recent.length - 1];
     const dp = last.p - first.p;
     const dh = (last.t - first.t) / 3600000;
@@ -294,7 +326,7 @@
   // After a manual override, recompute caps for all days that come after
   // changedKey, since their rollover depends on prior days' surplus.
   // We walk the 7-day window in order, recalculating each day's cap from scratch.
-  function recomputeRollovers(log, baseCap, changedKey) {
+  function recomputeRollovers(log, baseCap) {
     // Collect all day keys in the week, sorted chronologically
     const weekStart = log.weekStart;
     const allKeys = [];
@@ -308,7 +340,7 @@
     let runningRollover = 0;
     for (const key of allKeys) {
       const entry = log.days[key];
-      if (!entry) { runningRollover = 0; continue; }
+      if (!entry) continue; // no data for this day — carry rollover forward unchanged
       entry.cap = Math.min(100, baseCap + runningRollover);
       entry.rollover = runningRollover;
       const surplus = entry.cap - (entry.used || 0);
@@ -384,6 +416,9 @@
   // sessionPct: current 5h window usage (for live cards + burn rate)
   // weeklyPct:  weekly cumulative usage (for budget / rollover system)
   function buildWidget(plan, sessionPct, weeklyPct, history, weekLog) {
+    const isDark = document.documentElement.getAttribute('data-mode') !== 'light';
+    const C      = isDark ? DARK_PALETTE : LIGHT_PALETTE;
+
     const planData   = PLAN_INFO[plan] || PLAN_INFO.pro;
     const burnRate   = estimateBurnRate(history);
     const peak       = isPeakNow();
@@ -407,7 +442,7 @@
     // 5-hour window blocks
     const now = new Date();
     const startOfDay = new Date(now); startOfDay.setHours(0, 0, 0, 0);
-    const windowBlocks = Array.from({ length: 6 }, (_, i) => {
+    const windowBlocks = Array.from({ length: 5 }, (_, i) => {
       const start = new Date(startOfDay.getTime() + i * WINDOW_HOURS * 3600000);
       const end   = new Date(start.getTime() + WINDOW_HOURS * 3600000);
       const su    = start.getUTCHours();
@@ -472,7 +507,7 @@
       #${WIDGET_ID} .cue-week-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; }
       #${WIDGET_ID} .cue-day-cell {
         background: ${C.bg}; border: 1px solid ${C.border}; border-radius: 6px;
-        padding: 8px 4px 6px; text-align: center; font-size: 10px; position: relative;
+        padding: 8px 4px 6px; text-align: center; font-size: 11px; position: relative;
       }
       #${WIDGET_ID} .cue-day-cell.today { border-color: ${C.accent}; box-shadow: 0 0 0 1px ${C.accent}; }
       #${WIDGET_ID} .cue-day-cell.weekend { background: ${C.offpeak}; }
@@ -569,6 +604,13 @@
     s1.textContent = 'Live window';
     widget.appendChild(s1);
 
+    if (sessionPct === null && weeklyPct === null) {
+      const notice = document.createElement('div');
+      notice.style.cssText = `font-size:12px;color:${C.muted};padding:10px 0 6px;font-style:italic`;
+      notice.textContent = 'Waiting for page data — make sure the usage bars are visible on this page.';
+      widget.appendChild(notice);
+    }
+
     const grid = document.createElement('div');
     grid.className = 'cue-grid';
 
@@ -577,12 +619,12 @@
       { lbl: 'Weekly usage',   val: weeklyPct  !== null ? `${Math.round(weeklyPct)}%`  : '—', sub: 'of weekly limit',    color: weeklyColor,  bar: weeklyPct,  barColor: weeklyColor  },
       { lbl: 'Est. msgs left', val: msgsLeft !== null ? `~${msgsLeft}` : '—',                 sub: `of ~${msgsTotal} this window`, color: C.text },
       { lbl: 'Burn rate',      val: burnRate ? `${burnRate.toFixed(1)}%/h` : '—',             sub: burnRate ? 'recent sessions' : 'need more data', color: C.text },
-      { lbl: hoursLeft !== null ? 'Window left' : 'Window left',
+      { lbl: hoursLeft !== null ? 'Depletes in' : 'Window left',
         val: hoursLeft !== null ? formatDuration(hoursLeft * 3600000) : '—',
         sub: hoursLeft !== null ? 'at current rate' : 'insufficient data', color: C.text },
-      { lbl: peak ? 'Peak ends in' : 'Off-peak in',
+      { lbl: peak ? 'Peak ends in' : 'Peak starts in',
         val: formatDuration(msTilTrans),
-        sub: peak ? 'standard limits' : 'extended limits', color: peak ? C.warn : C.good },
+        sub: peak ? 'then extended limits' : 'extended limits now', color: peak ? C.warn : C.good },
     ];
 
     for (const c of cards) {
@@ -604,26 +646,32 @@
     s2.textContent = 'Daily budget';
     widget.appendChild(s2);
 
+    const isStale       = weeklyPct === null && todayUsed > 0;
     const currentUsed   = weeklyPct ?? todayUsed;
     const withinCap     = Math.min(currentUsed, todayCap);
     const overCap       = Math.max(0, currentUsed - todayCap);
     const budgetColor   = overBudget ? C.bad : C.good;
+    // Cap line at 99.5% max so it's always visible even when todayCap === 100
+    const capLineLeft   = Math.min(99.5, todayCap);
+    const rolloverTitle = rollover > 0
+      ? `title="Base cap ${baseCap.toFixed(1)}% + ${rollover.toFixed(1)}% surplus rolled over from prior days"`
+      : '';
 
     const budgetWrap = document.createElement('div');
     budgetWrap.style.cssText = `background:${C.bg};border:1px solid ${C.border};border-radius:8px;padding:12px 14px`;
     budgetWrap.innerHTML = `
       <div class="cue-budget-row">
-        <div class="cue-budget-label">Today</div>
+        <div class="cue-budget-label">Today${isStale ? `&nbsp;<span style="color:${C.warn};font-size:9px" title="Live data unavailable — showing last recorded value">stale</span>` : ''}</div>
         <div class="cue-budget-track">
           <div class="cue-budget-fill" style="width:${withinCap}%;background:${budgetColor}"></div>
           ${overCap > 0 ? `<div class="cue-budget-over" style="left:${withinCap}%;width:${overCap}%;background:${C.bad}"></div>` : ''}
-          <div class="cue-budget-cap-line" style="left:${Math.min(100, todayCap)}%"></div>
+          <div class="cue-budget-cap-line" style="left:${capLineLeft}%"></div>
         </div>
         <div class="cue-budget-value">${currentUsed.toFixed(1)}% / ${todayCap.toFixed(1)}%</div>
       </div>
       <div style="font-size:10px;color:${C.muted};margin-top:6px;line-height:1.6">
         Base cap: <strong style="color:${C.text}">${baseCap.toFixed(1)}%</strong>
-        ${rollover > 0 ? `&nbsp;+&nbsp;<span style="color:${C.good}">${rollover.toFixed(1)}% rolled over</span>` : ''}
+        ${rollover > 0 ? `&nbsp;+&nbsp;<span style="color:${C.good};cursor:help" ${rolloverTitle}>${rollover.toFixed(1)}% rolled over (?)</span>` : ''}
         &nbsp;&nbsp;|&nbsp;&nbsp;
         Week resets in <strong style="color:${C.text}">${formatDuration(msUntilWeekReset)}</strong>
         &nbsp;&nbsp;|&nbsp;&nbsp;
@@ -645,11 +693,16 @@
       const weekWrap = document.createElement('div');
       weekWrap.className = 'cue-week-grid';
 
-      // Close any open popover when clicking elsewhere
+      // Close any open popover when clicking elsewhere.
+      // Remove the previous listener (if any) before adding a new one so they don't accumulate.
       const closePopovers = () => {
         weekWrap.querySelectorAll('.cue-day-popover').forEach(p => p.remove());
       };
-      document.addEventListener('click', closePopovers, { once: false, capture: true });
+      if (_closePopoversHandler) {
+        document.removeEventListener('click', _closePopoversHandler, { capture: true });
+      }
+      _closePopoversHandler = closePopovers;
+      document.addEventListener('click', closePopovers, { capture: true });
 
       for (const day of weekGrid) {
         const cell = document.createElement('div');
@@ -661,7 +714,7 @@
 
         const usedH  = day.used !== null ? Math.min(100, day.used) : 0;
         const capH   = Math.min(100, day.cap);
-        const uColor = day.isFuture ? C.muted
+        const uColor = (day.isFuture || day.used === null) ? C.muted
           : (day.used > day.cap) ? C.bad
           : (day.used > day.cap * 0.75) ? C.warn
           : C.good;
@@ -671,7 +724,7 @@
 
         cell.innerHTML = `
           <div class="day-dow">${day.dow}</div>
-          <div style="font-size:9px;color:${C.muted};margin-bottom:2px">${formatDateShort(day.date)}</div>
+          <div style="font-size:10px;color:${C.muted};margin-bottom:2px">${formatDateShort(day.date)}</div>
           <div class="day-bar-wrap">
             <div class="day-bar-cap" style="bottom:${capPxFromBottom}px"></div>
             ${!day.isFuture && day.used !== null
@@ -683,7 +736,7 @@
             ${day.isFuture ? `~${day.cap.toFixed(0)}%` : (day.used !== null ? `${day.used.toFixed(0)}%` : '—')}
             ${isManual ? '<span style="font-size:8px;opacity:0.6" title="Manually set"> *</span>' : ''}
           </div>
-          <div style="font-size:9px;color:${C.muted}">cap ${day.cap.toFixed(0)}%</div>
+          <div style="font-size:10px;color:${C.muted}" title="${(() => { const rv = weekLog?.days?.[day.key]?.rollover ?? 0; return rv > 0 ? `cap = ${(day.cap - rv).toFixed(1)}% base + ${rv.toFixed(1)}% rollover` : `cap = ${day.cap.toFixed(1)}% (base)`; })()}">cap ${day.cap.toFixed(0)}%</div>
           ${isEditable ? '<div class="edit-hint">click to edit</div>' : ''}
         `;
 
@@ -709,6 +762,12 @@
             `;
 
             cell.appendChild(popover);
+            // Flip below the cell if the popover would extend above the viewport
+            const cellRect = cell.getBoundingClientRect();
+            if (cellRect.top < 160) {
+              popover.style.bottom = 'auto';
+              popover.style.top = 'calc(100% + 6px)';
+            }
             popover.querySelector('.pop-input').focus();
 
             // Save handler
@@ -721,7 +780,7 @@
               log.days[day.key].used   = raw;
               log.days[day.key].manual = true;
               // Recompute caps for all days after this one
-              recomputeRollovers(log, baseCap, day.key);
+              recomputeRollovers(log, baseCap);
               saveWeekLog(log);
               popover.remove();
               refresh();
@@ -745,7 +804,7 @@
                   delete log.days[day.key].manual;
                   // If it's a past day with no auto reading, zero it out
                   if (day.key < todayKey) log.days[day.key].used = 0;
-                  recomputeRollovers(log, baseCap, day.key);
+                  recomputeRollovers(log, baseCap);
                   saveWeekLog(log);
                 }
                 popover.remove();
@@ -787,10 +846,14 @@
     // ── Footer / controls ────────────────────────────────────────────────────────
     const footer = document.createElement('div');
     footer.className = 'cue-footer';
+    const updatedStr = _lastRefreshed
+      ? `Updated ${formatTime(_lastRefreshed)}`
+      : 'Not yet updated';
     footer.innerHTML = `
       <span><span class="cue-dot" style="background:${C.warn}"></span>Peak 8AM–2PM ET</span>
       <span><span class="cue-dot" style="background:${C.good}"></span>Off-peak</span>
       <span><span class="cue-dot" style="background:${C.muted}"></span>${planData.label}: ~${msgsPerWin} msgs/window</span>
+      <span style="color:${C.muted};font-style:italic">${updatedStr}</span>
       <div class="cue-controls">
         <label>Daily cap&nbsp;
           <input type="number" id="cue-cap-input" min="1" max="100" step="0.5"
@@ -830,6 +893,7 @@
     });
 
     footer.querySelector('#cue-reset-btn').addEventListener('click', () => {
+      if (!confirm('Clear all stored week data and burn-rate history? This cannot be undone.')) return;
       GM_setValue(KEY_WEEK_LOG, 'null');
       GM_setValue(KEY_HISTORY, '[]');
       refresh();
@@ -868,7 +932,14 @@
   let refreshTimer = null;
 
   function refresh() {
-    const plan = GM_getValue(KEY_PLAN, null) || detectPlanFromPage() || 'pro';
+    // Auto-sync plan from page if it has changed since last manual selection
+    const storedPlan   = GM_getValue(KEY_PLAN, null);
+    const detectedPlan = detectPlanFromPage();
+    if (detectedPlan && detectedPlan !== storedPlan) {
+      GM_setValue(KEY_PLAN, detectedPlan);
+    }
+    const plan = GM_getValue(KEY_PLAN, null) || detectedPlan || 'pro';
+
     const { sessionPct, weeklyPct } = getUsagePercents();
 
     // Burn-rate history tracks the session window (resets every 5h).
@@ -877,6 +948,9 @@
 
     // Budget/rollover system tracks weekly cumulative usage.
     const weekLog = updateWeekLog(weeklyPct);
+
+    // Mark refresh time (shown in footer)
+    _lastRefreshed = new Date();
 
     // Budget warning banner
     const todayKey   = isoDate(new Date());
@@ -913,7 +987,10 @@
       lastPath = location.pathname;
       if (location.pathname.includes('/settings/usage')) {
         clearInterval(refreshTimer);
-        setTimeout(start, 600);
+        if (!_startPending) {
+          _startPending = true;
+          setTimeout(() => { _startPending = false; start(); }, 600);
+        }
       }
     }
   }).observe(document.body, { childList: true, subtree: true });
