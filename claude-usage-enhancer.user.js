@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Usage Enhancer
 // @namespace    https://claude.ai/
-// @version      2.1
+// @version      2.2
 // @description  Adds daily allocation view, reset countdowns, burn rate, daily % budget with rollover, and weekly burndown to the Claude usage page.
 // @author       Dacilla
 // @match        https://claude.ai/settings/usage*
@@ -866,6 +866,10 @@
             ).join('')}
           </select>
         </label>
+        <button id="cue-refresh-btn" title="Refresh native usage data and update dashboard" style="
+          background:none;border:1px solid ${C.border};color:${C.text};
+          border-radius:5px;padding:3px 8px;font-size:11px;cursor:pointer;
+        ">↻ Refresh</button>
         <button id="cue-reset-btn" title="Clear stored week data and burn-rate history" style="
           background:none;border:1px solid ${C.border};color:${C.muted};
           border-radius:5px;padding:3px 8px;font-size:11px;cursor:pointer;
@@ -891,6 +895,8 @@
       GM_setValue(KEY_PLAN, e.target.value);
       refresh();
     });
+
+    footer.querySelector('#cue-refresh-btn').addEventListener('click', forceRefresh);
 
     footer.querySelector('#cue-reset-btn').addEventListener('click', () => {
       if (!confirm('Clear all stored week data and burn-rate history? This cannot be undone.')) return;
@@ -965,6 +971,23 @@
     const existing = document.getElementById(WIDGET_ID);
     if (existing) existing.replaceWith(widget);
     else inject(widget);
+  }
+
+  // Click the native page update button (if present), wait for re-render, then refresh dashboard.
+  function forceRefresh() {
+    const widget = document.getElementById(WIDGET_ID);
+    const allButtons = Array.from(document.querySelectorAll('button'));
+    const nativeBtn = allButtons.find(btn => {
+      if (widget?.contains(btn)) return false;
+      const t = (btn.textContent || btn.innerText || '').toLowerCase().trim();
+      return t === 'update' || t === 'refresh' || t === 'update usage' || t === 'refresh usage';
+    });
+    if (nativeBtn) {
+      nativeBtn.click();
+      setTimeout(refresh, 2000);
+    } else {
+      refresh();
+    }
   }
 
   function start() {
