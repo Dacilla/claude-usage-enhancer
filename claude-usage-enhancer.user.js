@@ -5,6 +5,8 @@
 // @description  Adds daily allocation view, reset countdowns, burn rate, daily % budget with rollover, and weekly burndown to the Claude usage page.
 // @author       Dacilla
 // @match        https://claude.ai/settings/usage*
+// @updateURL    https://raw.githubusercontent.com/Dacilla/claude-usage-enhancer/main/claude-usage-enhancer.user.js
+// @downloadURL  https://raw.githubusercontent.com/Dacilla/claude-usage-enhancer/main/claude-usage-enhancer.user.js
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @run-at       document-idle
