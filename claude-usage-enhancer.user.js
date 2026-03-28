@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Usage Enhancer
 // @namespace    https://claude.ai/
-// @version      2.0.0
+// @version      2.0.1
 // @description  Adds daily allocation view, reset countdowns, burn rate, daily % budget with rollover, and weekly burndown to the Claude usage page.
 // @author       Dacilla
 // @match        https://claude.ai/settings/usage*
