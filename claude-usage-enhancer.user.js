@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Usage Enhancer
 // @namespace    https://claude.ai/
-// @version      2.6
+// @version      2.7
 // @description  Adds daily allocation view, reset countdowns, burn rate, daily % budget with rollover, and weekly burndown to the Claude usage page.
 // @author       Dacilla
 // @match        https://claude.ai/settings/usage*
@@ -267,9 +267,37 @@
     saveHistory(history);
   }
 
+  // Extract session remaining time from "Resets in X min/hr" text on the page
+  function extractSessionRemainingMs() {
+    const bars = Array.from(document.querySelectorAll('[role="progressbar"]'));
+    for (const bar of bars) {
+      const nearby = nearbyText(bar, 4);
+      if (nearby.includes('current session') || nearby.includes('resets in')) {
+        // Found the session bar; extract "Resets in X min/hr" from nearby text
+        const match = nearby.match(/resets in\s+(\d+)\s*(min|hr|hour)/i);
+        if (match) {
+          const value = parseInt(match[1], 10);
+          const unit = match[2].toLowerCase();
+          const ms = unit.startsWith('h') ? value * 60 * 60 * 1000 : value * 60 * 1000;
+          return ms;
+        }
+      }
+    }
+    return null;
+  }
+
   function getSessionStart() {
     const val = GM_getValue(KEY_SESSION_START, null);
-    return val ? parseInt(val, 10) : null;
+    if (val) return parseInt(val, 10);
+
+    // Fallback: calculate from "Resets in X min" text on the page
+    const remainingMs = extractSessionRemainingMs();
+    if (remainingMs !== null) {
+      const SESSION_DURATION = 5 * 60 * 60 * 1000;
+      return Date.now() - (SESSION_DURATION - remainingMs);
+    }
+
+    return null;
   }
 
   function estimateBurnRate(history) {
