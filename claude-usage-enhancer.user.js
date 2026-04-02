@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Usage Enhancer
 // @namespace    https://claude.ai/
-// @version      2.3
+// @version      2.4
 // @description  Adds daily allocation view, reset countdowns, burn rate, daily % budget with rollover, and weekly burndown to the Claude usage page.
 // @author       Dacilla
 // @match        https://claude.ai/settings/usage*
@@ -203,6 +203,9 @@
       } else if (nearby.includes('all models') || nearby.includes('resets thu') || nearby.includes('weekly')) {
         // "Resets Thu" and "All models" are unique to the weekly row.
         if (weeklyPct === null) weeklyPct = pct;
+      } else if (nearby.includes('extra usage') || nearby.includes('spent') || nearby.includes('spending cap')) {
+        // Skip extra usage section progressbars (e.g., "$19.57 spent", "A$20 monthly spend limit").
+        continue;
       } else {
         // Fallback: first unclassified bar → session, second → weekly.
         if (sessionPct === null) sessionPct = pct;
