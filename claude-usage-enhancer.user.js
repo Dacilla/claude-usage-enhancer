@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Usage Enhancer
 // @namespace    https://claude.ai/
-// @version      2.4
+// @version      2.5
 // @description  Adds daily allocation view, reset countdowns, burn rate, daily % budget with rollover, and weekly burndown to the Claude usage page.
 // @author       Dacilla
 // @match        https://claude.ai/settings/usage*
@@ -47,6 +47,7 @@
   const KEY_HISTORY      = 'cue_usage_history';   // [{t, p}]  — last 24 h of readings
   const KEY_DAILY_BUDGET = 'cue_daily_budget_pct'; // number: user's base daily cap %
   const KEY_WEEK_LOG     = 'cue_week_log';         // {weekStart, days:{date:{used,cap}}}
+  const KEY_SESSION_START = 'cue_session_start';   // timestamp: when current 5h session began
 
   // ─── Colour palettes (resolved per-render based on page theme) ────────────────
 
@@ -254,9 +255,21 @@
     const history = loadHistory();
     const now = Date.now();
     const last = history[history.length - 1];
+
+    // Detect session boundary: if current pct is significantly lower than recent pct,
+    // a new 5h session has started.
+    if (last && last.p > 20 && pct < 10) {
+      GM_setValue(KEY_SESSION_START, now);
+    }
+
     if (last && now - last.t < 120000) { last.p = pct; last.t = now; }
     else history.push({ t: now, p: pct });
     saveHistory(history);
+  }
+
+  function getSessionStart() {
+    const val = GM_getValue(KEY_SESSION_START, null);
+    return val ? parseInt(val, 10) : null;
   }
 
   function estimateBurnRate(history) {
@@ -447,6 +460,10 @@
     const msgsTotal  = Math.round(msgsPerWin * WINDOWS_PER_DAY);
     const msgsLeft   = remaining !== null ? Math.round((remaining / 100) * msgsTotal) : null;
     const hoursLeft  = (burnRate && burnRate > 0 && remaining !== null) ? remaining / burnRate : null;
+    // Session time remaining: 5 hours - elapsed time since session start
+    const sessionStart = getSessionStart();
+    const SESSION_DURATION = 5 * 60 * 60 * 1000; // 5 hours in ms
+    const sessionMsRemaining = (sessionStart !== null) ? Math.max(0, SESSION_DURATION - (Date.now() - sessionStart)) : null;
     const baseCap    = getDailyBaseCap();
     const todayKey   = isoDate(new Date());
     const todayEntry = weekLog?.days?.[todayKey] || null;
@@ -637,6 +654,7 @@
 
     const cards = [
       { lbl: 'Session usage',  val: sessionPct !== null ? `${Math.round(sessionPct)}%` : '—', sub: 'current 5h window',  color: sessionColor, bar: sessionPct, barColor: sessionColor },
+      { lbl: 'Session ends in', val: sessionMsRemaining !== null ? formatDuration(sessionMsRemaining) : '—', sub: sessionMsRemaining !== null ? 'until 5h window resets' : 'waiting for data', color: C.text },
       { lbl: 'Weekly usage',   val: weeklyPct  !== null ? `${Math.round(weeklyPct)}%`  : '—', sub: 'of weekly limit',    color: weeklyColor,  bar: weeklyPct,  barColor: weeklyColor  },
       { lbl: 'Est. msgs left', val: msgsLeft !== null ? `~${msgsLeft}` : '—',                 sub: `of ~${msgsTotal} this window`, color: C.text },
       { lbl: 'Burn rate',      val: burnRate ? `${burnRate.toFixed(1)}%/h` : '—',             sub: burnRate ? 'recent sessions' : 'need more data', color: C.text },
