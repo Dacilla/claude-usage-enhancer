@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Usage Enhancer
 // @namespace    https://claude.ai/
-// @version      2.7
+// @version      2.8
 // @description  Adds daily allocation view, reset countdowns, burn rate, daily % budget with rollover, and weekly burndown to the Claude usage page.
 // @author       Dacilla
 // @match        https://claude.ai/settings/usage*
@@ -273,13 +273,24 @@
     for (const bar of bars) {
       const nearby = nearbyText(bar, 4);
       if (nearby.includes('current session') || nearby.includes('resets in')) {
-        // Found the session bar; extract "Resets in X min/hr" from nearby text
-        const match = nearby.match(/resets in\s+(\d+)\s*(min|hr|hour)/i);
-        if (match) {
-          const value = parseInt(match[1], 10);
-          const unit = match[2].toLowerCase();
-          const ms = unit.startsWith('h') ? value * 60 * 60 * 1000 : value * 60 * 1000;
-          return ms;
+        // Found the session bar; extract "Resets in X hr Y min" or "Resets in X min/hr" from nearby text
+        let totalMs = 0;
+
+        // Match hours (e.g., "3 hr")
+        const hrMatch = nearby.match(/resets in.*?(\d+)\s*hr/i);
+        if (hrMatch) {
+          totalMs += parseInt(hrMatch[1], 10) * 60 * 60 * 1000;
+        }
+
+        // Match minutes (e.g., "31 min")
+        const minMatch = nearby.match(/(\d+)\s*min/i);
+        if (minMatch) {
+          totalMs += parseInt(minMatch[1], 10) * 60 * 1000;
+        }
+
+        // If we found at least one unit, return the total
+        if (totalMs > 0) {
+          return totalMs;
         }
       }
     }
